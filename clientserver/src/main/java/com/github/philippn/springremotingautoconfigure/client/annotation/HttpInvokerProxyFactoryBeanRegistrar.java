@@ -23,7 +23,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.AnnotatedBeanDefinition;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.beans.factory.support.BeanDefinitionBuilder;
 import org.springframework.beans.factory.support.BeanDefinitionRegistry;
@@ -38,122 +37,147 @@ import org.springframework.util.ClassUtils;
 
 import com.github.philippn.springremotingautoconfigure.annotation.RemoteExport;
 import com.github.philippn.springremotingautoconfigure.util.RemotingUtils;
+import java.util.HashMap;
+import java.util.Map;
+import org.springframework.boot.bind.RelaxedPropertyResolver;
+import org.springframework.context.EnvironmentAware;
+import org.springframework.core.env.Environment;
 
 /**
  * @author Philipp Nanz
  */
-public class HttpInvokerProxyFactoryBeanRegistrar implements ImportBeanDefinitionRegistrar {
+public class HttpInvokerProxyFactoryBeanRegistrar implements ImportBeanDefinitionRegistrar, EnvironmentAware {
 
-	final static Logger logger = LoggerFactory.getLogger(HttpInvokerProxyFactoryBeanRegistrar.class);
+    private final Logger logger = LoggerFactory.getLogger(HttpInvokerProxyFactoryBeanRegistrar.class);
 
-	private static final Set<String> alreadyProxiedSet = 
-			Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+    private static final Set<String> alreadyProxiedSet
+            = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
 
-	@Value("${remote.baseUrl}")
-	private String baseUrl = "http://localhost:8080";
+    private final String baseUrl = "http://localhost:8080";
 
-	/**
-	 * @return the baseUrl
-	 */
-	public String getBaseUrl() {
-		return baseUrl;
-	}
+    private Map<String, Object> customizeBaseUrls = new HashMap<>(0);
 
-	/**
-	 * @param baseUrl the baseUrl to set
-	 */
-	public void setBaseUrl(String baseUrl) {
-		this.baseUrl = baseUrl;
-	}
+    /**
+     * @return the baseUrl
+     */
+    public String getBaseUrl() {
+        return baseUrl;
+    }
 
-	/* (non-Javadoc)
-	 * @see org.springframework.context.annotation.ImportBeanDefinitionRegistrar#registerBeanDefinitions(org.springframework.core.type.AnnotationMetadata, org.springframework.beans.factory.support.BeanDefinitionRegistry)
-	 */
-	@Override
-	public void registerBeanDefinitions(AnnotationMetadata importingClassMetadata, BeanDefinitionRegistry registry) {
-		Set<String> basePackages = new HashSet<>();
-		for (String beanName : registry.getBeanDefinitionNames()) {
-			BeanDefinition definition = registry.getBeanDefinition(beanName);
-			if (definition.getBeanClassName() != null) {
-				try {
-					Class<?> resolvedClass = ClassUtils.forName(definition.getBeanClassName(), null);
-					EnableHttpInvokerAutoProxy autoProxy = 
-							AnnotationUtils.findAnnotation(resolvedClass, EnableHttpInvokerAutoProxy.class);
-					if (autoProxy != null) {
-						if (autoProxy.basePackages().length > 0) {
-							Collections.addAll(basePackages, autoProxy.basePackages());
-						} else {
-							basePackages.add(resolvedClass.getPackage().getName());
-						}
-					}
-				} catch (ClassNotFoundException e) {
-					throw new IllegalStateException("Unable to inspect class " + 
-							definition.getBeanClassName() + " for @EnableHttpInvokerAutoProxy annotations");
-				}
-			}
-		}
-		
-		if (basePackages.isEmpty()) {
-			return;
-		}
-		
-		ClassPathScanningCandidateComponentProvider scanner =
-				new ClassPathScanningCandidateComponentProvider(false) {
+    public Map<String, Object> getCustomizeBaseUrls() {
+        return customizeBaseUrls;
+    }
 
-					/* (non-Javadoc)
-					 * @see org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider#isCandidateComponent(org.springframework.beans.factory.annotation.AnnotatedBeanDefinition)
-					 */
-					@Override
-					protected boolean isCandidateComponent(
-							AnnotatedBeanDefinition beanDefinition) {
-						return beanDefinition.getMetadata().isInterface() && 
-								beanDefinition.getMetadata().isIndependent();
-					}
-		};
-		scanner.addIncludeFilter(new AnnotationTypeFilter(RemoteExport.class));
-		
-		for (String basePackage : basePackages) {
-			for (BeanDefinition definition : scanner.findCandidateComponents(basePackage)) {
-				if (definition.getBeanClassName() != null) {
-					try {
-						Class<?> resolvedClass = 
-								ClassUtils.forName(definition.getBeanClassName(), null);
-						setupProxy(resolvedClass, registry);
-					} catch (ClassNotFoundException e) {
-						throw new IllegalStateException("Unable to inspect class " + 
-								definition.getBeanClassName() + " for @RemoteExport annotations");
-					}
-				}
-			}	
-		}
-	}
+    public void setCustomizeBaseUrls(Map<String, Object> customizeBaseUrls) {
+        this.customizeBaseUrls = customizeBaseUrls;
+    }
 
-	protected void setupProxy(Class<?> clazz, BeanDefinitionRegistry registry) {
-		Assert.isTrue(clazz.isInterface(), 
-				"Annotation @RemoteExport may only be used on interfaces");
-		
-		if (alreadyProxiedSet.contains(clazz.getName())) {
-			return;
-		}
-		alreadyProxiedSet.add(clazz.getName());
-		
-		BeanDefinitionBuilder builder = BeanDefinitionBuilder
-				.genericBeanDefinition(HttpInvokerProxyFactoryBean.class)
-				.setLazyInit(true)
-				.addPropertyValue("serviceInterface", clazz)
-				.addPropertyValue("serviceUrl", 
-						customizeBaseUrl(getBaseUrl(), clazz) + RemotingUtils.buildMappingPath(clazz));
-		
-		registry.registerBeanDefinition(clazz.getSimpleName() + "Proxy", 
-				builder.getBeanDefinition());
-		
-		logger.info("Created HttpInvokerProxyFactoryBean for " + clazz.getSimpleName());
-	}
+    /* (non-Javadoc)
+     * @see org.springframework.context.annotation.ImportBeanDefinitionRegistrar#registerBeanDefinitions(org.springframework.core.type.AnnotationMetadata, org.springframework.beans.factory.support.BeanDefinitionRegistry)
+     */
+    @Override
+    public void registerBeanDefinitions(AnnotationMetadata importingClassMetadata, BeanDefinitionRegistry registry) {
+        Set<String> basePackages = new HashSet<>();
+        for (String beanName : registry.getBeanDefinitionNames()) {
+            BeanDefinition definition = registry.getBeanDefinition(beanName);
+            if (definition.getBeanClassName() != null) {
+                try {
+                    Class<?> resolvedClass = ClassUtils.forName(definition.getBeanClassName(), null);
+                    EnableHttpInvokerAutoProxy autoProxy
+                            = AnnotationUtils.findAnnotation(resolvedClass, EnableHttpInvokerAutoProxy.class);
+                    if (autoProxy != null) {
+                        if (autoProxy.basePackages().length > 0) {
+                            Collections.addAll(basePackages, autoProxy.basePackages());
+                        } else {
+                            basePackages.add(resolvedClass.getPackage().getName());
+                        }
+                    }
+                } catch (ClassNotFoundException e) {
+                    throw new IllegalStateException("Unable to inspect class "
+                            + definition.getBeanClassName() + " for @EnableHttpInvokerAutoProxy annotations");
+                }
+            }
+        }
 
-	protected String customizeBaseUrl(String baseUrl, Class<?> clazz) {
-		// https://github.com/philippn/spring-remoting-autoconfigure/issues/1
-		// One could imagine a lookup from a properties file in the format:
-		// FooService=http://1.2.3.4:8080
-		return baseUrl;
-	}
+        if (basePackages.isEmpty()) {
+            return;
+        }
+
+        ClassPathScanningCandidateComponentProvider scanner
+                = new ClassPathScanningCandidateComponentProvider(false) {
+
+            /* (non-Javadoc)
+             * @see org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider#isCandidateComponent(org.springframework.beans.factory.annotation.AnnotatedBeanDefinition)
+             */
+            @Override
+            protected boolean isCandidateComponent(
+                    AnnotatedBeanDefinition beanDefinition) {
+                return beanDefinition.getMetadata().isInterface()
+                        && beanDefinition.getMetadata().isIndependent();
+            }
+        };
+        scanner.addIncludeFilter(new AnnotationTypeFilter(RemoteExport.class));
+
+        for (String basePackage : basePackages) {
+            for (BeanDefinition definition : scanner.findCandidateComponents(basePackage)) {
+                if (definition.getBeanClassName() != null) {
+                    try {
+                        Class<?> resolvedClass
+                                = ClassUtils.forName(definition.getBeanClassName(), null);
+                        setupProxy(resolvedClass, registry);
+                    } catch (ClassNotFoundException e) {
+                        throw new IllegalStateException("Unable to inspect class "
+                                + definition.getBeanClassName() + " for @RemoteExport annotations");
+                    }
+                }
+            }
+        }
+    }
+
+    protected void setupProxy(Class<?> clazz, BeanDefinitionRegistry registry) {
+        Assert.isTrue(clazz.isInterface(),
+                "Annotation @RemoteExport may only be used on interfaces");
+
+        if (alreadyProxiedSet.contains(clazz.getName())) {
+            return;
+        }
+        alreadyProxiedSet.add(clazz.getName());
+
+        BeanDefinitionBuilder builder = BeanDefinitionBuilder
+                .genericBeanDefinition(HttpInvokerProxyFactoryBean.class)
+                .setLazyInit(true)
+                .addPropertyValue("serviceInterface", clazz)
+                .addPropertyValue("serviceUrl", customizeBaseUrl(clazz) + RemotingUtils.buildMappingPath(clazz));
+
+        registry.registerBeanDefinition(clazz.getSimpleName() + "Proxy",
+                builder.getBeanDefinition());
+
+        logger.info("Created HttpInvokerProxyFactoryBean for " + clazz.getSimpleName());
+    }
+
+    protected String customizeBaseUrl(Class<?> clazz) {
+        // https://github.com/philippn/spring-remoting-autoconfigure/issues/1
+        final String[] keys = new String[]{clazz.getCanonicalName(), clazz.getPackage().getName()};
+        final Map<String, Object> baseUrls = getCustomizeBaseUrls();
+        if (!baseUrls.isEmpty()) {
+            for (String key : keys) {
+                if (baseUrls.containsKey(key)) {
+                    return baseUrls.get(key).toString();
+                }
+            }
+        }
+        return getBaseUrl();
+    }
+
+    @Override
+    public void setEnvironment(Environment environment) {
+        initCustomizeBaseUrls(environment);
+    }
+
+    private void initCustomizeBaseUrls(Environment environment) {
+        final String keyPrefix = "remote.baseUrl.";
+        RelaxedPropertyResolver propertyResolver = new RelaxedPropertyResolver(environment);
+        setCustomizeBaseUrls(propertyResolver.getSubProperties(keyPrefix));
+    }
+
 }
